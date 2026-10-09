@@ -7,6 +7,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android26
+            platform: android-26
+          - abi: armeabi-v7a
+            target: armv7a-linux-androideabi26
+            platform: android-26
+          - abi: x86
+            target: i686-linux-android26
+            platform: android-26
+          - abi: x86_64
+            target: x86_64-linux-android26
+            platform: android-26
+
     steps:
       - uses: actions/checkout@v4
 
@@ -15,32 +32,44 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Build BoringSSL (arm64)
+      # Cache BoringSSL build per-ABI (opsional, mempercepat build berikutnya)
+      - name: Cache BoringSSL
+        uses: actions/cache@v4
+        with:
+          path: bssl
+          key: bssl-${{ matrix.abi }}-r27c-${{ hashFiles('jni/ino_adb.cpp') }}
+
+      - name: Build BoringSSL (${{ matrix.abi }})
         run: |
-          git clone --depth 1 https://boringssl.googlesource.com/boringssl
+          if [ ! -d boringssl ]; then
+            git clone --depth 1 https://boringssl.googlesource.com/boringssl
+          fi
           cmake -S boringssl -B bssl -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
-            -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=${{ matrix.platform }} \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS="-Os -ffunction-sections -fdata-sections" \
             -DCMAKE_CXX_FLAGS="-Os -ffunction-sections -fdata-sections"
           ninja -C bssl crypto
 
-      - name: Build libadb.so
+      - name: Build libadb.so (${{ matrix.abi }})
         run: |
-          CXX=${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++
+          CXX=${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.target }}-clang++
           LIBCRYPTO=$(find bssl -name libcrypto.a | head -n1)
-          mkdir -p out/arm64-v8a
+          mkdir -p out/${{ matrix.abi }}
           $CXX -std=c++17 -Os -fPIC -shared -fno-exceptions -fno-rtti \
             -fvisibility=hidden -ffunction-sections -fdata-sections \
             -Iboringssl/include jni/ino_adb.cpp "$LIBCRYPTO" \
-            -o out/arm64-v8a/libadb.so -llog -static-libstdc++ \
+            -o out/${{ matrix.abi }}/libadb.so -llog -static-libstdc++ \
             -Wl,--gc-sections -Wl,--strip-all -Wl,--exclude-libs,ALL \
             -Wl,-z,max-page-size=16384
-          ls -l out/arm64-v8a/libadb.so
-          file out/arm64-v8a/libadb.so
+          ls -l out/${{ matrix.abi }}/libadb.so
+          file out/${{ matrix.abi }}/libadb.so
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libadb-arm64-v8a
-          path: out/arm64-v8a/libadb.so
+          name: libadb-${{ matrix.abi }}
+          path: out/${{ matrix.abi }}/libadb.so
+          if-no-files-found: error
